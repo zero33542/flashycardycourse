@@ -1,0 +1,158 @@
+---
+alwaysApply: true
+description: "Database interactions must always use Drizzle ORM schema and queries"
+---
+
+# Drizzle Database Interaction Guidelines
+
+This project uses **Drizzle ORM** with PostgreSQL (Neon Database) for all database operations.
+
+## Project Database Configuration
+
+- **Schema**: [src/db/schema.ts](mdc:src/db/schema.ts)
+- **Configuration**: [drizzle.config.ts](mdc:drizzle.config.ts)
+- **Database Provider**: Neon Database (@neondatabase/serverless)
+
+## Database Schema
+
+The project defines the following tables in [src/db/schema.ts](mdc:src/db/schema.ts):
+
+1. **decksTable** - Flashcard decks with user association (Clerk user ID)
+2. **cardsTable** - Individual flashcards with foreign key to decks
+
+## Required Database Setup Pattern
+
+### 1. Database Connection
+Always create a database connection file using this pattern:
+
+```typescript
+import { neon } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/neon-http';
+import * as schema from './schema';
+
+const sql = neon(process.env.DATABASE_URL!);
+export const db = drizzle(sql, { schema });
+```
+
+### 2. Import Schema Tables
+Always import tables from the schema:
+
+```typescript
+import { decksTable, cardsTable } from '@/db/schema';
+```
+
+### 3. Query Examples
+
+**Select Operations:**
+```typescript
+// Get all decks for a user
+const userDecks = await db
+  .select()
+  .from(decksTable)
+  .where(eq(decksTable.userId, userId));
+
+// Get cards for a specific deck
+const deckCards = await db
+  .select()
+  .from(cardsTable)
+  .where(eq(cardsTable.deckId, deckId));
+```
+
+**Insert Operations:**
+```typescript
+// Insert new deck
+const [newDeck] = await db
+  .insert(decksTable)
+  .values({
+    name: deckName,
+    description: deckDescription,
+    userId: userId,
+  })
+  .returning();
+
+// Insert new card
+const [newCard] = await db
+  .insert(cardsTable)
+  .values({
+    deckId: deckId,
+    front: frontText,
+    back: backText,
+  })
+  .returning();
+```
+
+**Update Operations:**
+```typescript
+// Update deck
+await db
+  .update(decksTable)
+  .set({ 
+    name: newName,
+    updatedAt: new Date(),
+  })
+  .where(eq(decksTable.id, deckId));
+```
+
+**Delete Operations:**
+```typescript
+// Delete deck (cascade deletes cards)
+await db
+  .delete(decksTable)
+  .where(eq(decksTable.id, deckId));
+```
+
+## Mandatory Rules
+
+1. **NEVER use raw SQL queries** - Always use Drizzle query builder
+2. **Always import from schema** - Use `import { decksTable, cardsTable } from '@/db/schema'`
+3. **Use proper operators** - Import `eq`, `and`, `or`, etc. from `drizzle-orm`
+4. **Handle user authentication** - Always filter by `userId` for user-specific data
+5. **Use returning()** - For insert/update operations that need the result
+6. **Proper error handling** - Wrap database operations in try-catch blocks
+
+## Required Imports Pattern
+
+```typescript
+import { db } from '@/db'; // Database connection
+import { decksTable, cardsTable } from '@/db/schema'; // Schema tables
+import { eq, and, desc } from 'drizzle-orm'; // Query operators
+```
+
+## Database Scripts Available
+
+Use these npm scripts for database management:
+- `npm run db:generate` - Generate migrations
+- `npm run db:push` - Push schema changes
+- `npm run db:migrate` - Run migrations  
+- `npm run db:studio` - Open Drizzle Studio
+
+## Authentication Integration
+
+Since this project uses Clerk, always filter database queries by user:
+
+```typescript
+// Correct: Filter by authenticated user
+const userDecks = await db
+  .select()
+  .from(decksTable)
+  .where(eq(decksTable.userId, auth().userId));
+
+// WRONG: Don't fetch all data without user filtering
+const allDecks = await db.select().from(decksTable);
+```
+
+## Error Handling Pattern
+
+```typescript
+try {
+  const result = await db
+    .select()
+    .from(decksTable)
+    .where(eq(decksTable.userId, userId));
+  
+  return result;
+} catch (error) {
+  console.error('Database operation failed:', error);
+  throw new Error('Failed to fetch user decks');
+}
+```

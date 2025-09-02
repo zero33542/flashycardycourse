@@ -1,0 +1,243 @@
+---
+alwaysApply: true
+description: "Clerk authentication and data access control security guidelines"
+---
+
+# Clerk Authentication & Data Access Control
+
+This project uses **Clerk** for authentication. ALL data access must be properly filtered by authenticated user to prevent unauthorized access.
+
+## Core Security Principles
+
+1. **NEVER allow users to access data that doesn't belong to them**
+2. **ALWAYS filter database queries by authenticated user ID**
+3. **VERIFY user ownership before any data operations**
+4. **Protect all API routes with authentication checks**
+
+## Required Clerk Imports
+
+```typescript
+// For server components and API routes
+import { auth } from '@clerk/nextjs/server';
+
+// For client components
+import { useUser } from '@clerk/nextjs';
+
+// For middleware
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
+```
+
+## Authentication Patterns
+
+### Server Components & API Routes
+```typescript
+import { auth } from '@clerk/nextjs/server';
+
+export default async function MyServerComponent() {
+  const { userId } = auth();
+  
+  if (!userId) {
+    // Redirect to sign-in or return unauthorized
+    return <div>Please sign in</div>;
+  }
+  
+  // Safe to proceed with userId
+}
+```
+
+### Client Components
+```typescript
+import { useUser } from '@clerk/nextjs';
+
+export default function MyClientComponent() {
+  const { user, isLoaded } = useUser();
+  
+  if (!isLoaded) return <div>Loading...</div>;
+  if (!user) return <div>Please sign in</div>;
+  
+  // Safe to proceed with user.id
+}
+```
+
+## Database Query Security
+
+### ✅ CORRECT - Always filter by user ID
+```typescript
+// Get user's decks only
+const userDecks = await db
+  .select()
+  .from(decksTable)
+  .where(eq(decksTable.userId, userId));
+
+// Get user's cards only (through deck ownership)
+const userCards = await db
+  .select()
+  .from(cardsTable)
+  .innerJoin(decksTable, eq(cardsTable.deckId, decksTable.id))
+  .where(eq(decksTable.userId, userId));
+```
+
+### ❌ WRONG - Never fetch all data
+```typescript
+// SECURITY VULNERABILITY - Don't do this
+const allDecks = await db.select().from(decksTable);
+const allCards = await db.select().from(cardsTable);
+```
+
+### ✅ CORRECT - Verify ownership before operations
+```typescript
+// Before updating/deleting, verify the resource belongs to the user
+const deck = await db
+  .select()
+  .from(decksTable)
+  .where(and(
+    eq(decksTable.id, deckId),
+    eq(decksTable.userId, userId)
+  ))
+  .limit(1);
+
+if (deck.length === 0) {
+  throw new Error('Deck not found or access denied');
+}
+
+// Safe to proceed with operation
+await db
+  .update(decksTable)
+  .set({ name: newName })
+  .where(eq(decksTable.id, deckId));
+```
+
+## API Route Protection
+
+### All API routes must verify authentication
+```typescript
+import { auth } from '@clerk/nextjs/server';
+
+export async function GET() {
+  const { userId } = auth();
+  
+  if (!userId) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  
+  // Proceed with authenticated logic
+}
+
+export async function POST(request: Request) {
+  const { userId } = auth();
+  
+  if (!userId) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  
+  // Proceed with authenticated logic
+}
+```
+
+### Verify resource ownership in API routes
+```typescript
+export async function DELETE(
+  request: Request,
+  { params }: { params: { deckId: string } }
+) {
+  const { userId } = auth();
+  
+  if (!userId) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  
+  // Verify the deck belongs to the authenticated user
+  const deck = await db
+    .select()
+    .from(decksTable)
+    .where(and(
+      eq(decksTable.id, params.deckId),
+      eq(decksTable.userId, userId)
+    ))
+    .limit(1);
+    
+  if (deck.length === 0) {
+    return new Response('Deck not found or access denied', { status: 404 });
+  }
+  
+  // Safe to delete
+  await db
+    .delete(decksTable)
+    .where(eq(decksTable.id, params.deckId));
+    
+  return new Response('Deck deleted', { status: 200 });
+}
+```
+
+## Middleware Configuration
+
+Ensure [src/middleware.ts](mdc:src/middleware.ts) properly protects routes:
+
+```typescript
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
+
+const isProtectedRoute = createRouteMatcher([
+  '/dashboard(.*)',
+  '/api/decks(.*)',
+  '/api/cards(.*)',
+]);
+
+export default clerkMiddleware((auth, req) => {
+  if (isProtectedRoute(req)) auth().protect();
+});
+
+export const config = {
+  matcher: ['/((?!.*\\..*|_next).*)', '/', '/(api|trpc)(.*)'],
+};
+```
+
+## Security Checklist
+
+Before deploying any feature, verify:
+
+- [ ] All database queries filter by `userId`
+- [ ] API routes check authentication with `auth()`
+- [ ] Resource ownership is verified before operations
+- [ ] No direct access to other users' data is possible
+- [ ] Error messages don't leak information about other users' data
+- [ ] Client-side components handle unauthenticated states
+
+## Common Security Mistakes to Avoid
+
+1. **❌ Trusting client-provided user IDs** - Always use `auth().userId` from Clerk
+2. **❌ Filtering data on the client side** - Always filter at the database level
+3. **❌ Forgetting to check ownership** - Always verify before update/delete operations
+4. **❌ Exposing other users' data in lists** - Never return unfiltered collections
+5. **❌ Using user input for user identification** - Never trust `userId` from request body/params
+
+## Example Secure Implementation
+
+```typescript
+// API route for getting user's decks
+import { auth } from '@clerk/nextjs/server';
+import { db } from '@/db';
+import { decksTable } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+
+export async function GET() {
+  const { userId } = auth();
+  
+  if (!userId) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  
+  try {
+    const userDecks = await db
+      .select()
+      .from(decksTable)
+      .where(eq(decksTable.userId, userId));
+      
+    return Response.json({ decks: userDecks });
+  } catch (error) {
+    console.error('Failed to fetch user decks:', error);
+    return Response.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+```
+
+Remember: **Security is not optional**. Every data access point must verify user authentication and authorization.
